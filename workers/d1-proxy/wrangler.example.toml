@@ -1,0 +1,19 @@
+name = "gorm-d1-proxy"
+main = "src/index.ts"
+compatibility_date = "2026-07-10"
+workers_dev = true
+
+[observability]
+enabled = true
+
+[[d1_databases]]
+binding = "DB"
+database_name = "replace-with-d1-database-name"
+database_id = "00000000-0000-0000-0000-000000000000"
+preview_database_id = "00000000-0000-0000-0000-000000000000"
+
+[vars]
+MAX_BODY_BYTES = "1048576"
+MAX_SQL_LENGTH = "100000"
+MAX_PARAMS = "100"
+MAX_BATCH_STATEMENTS = "50"
