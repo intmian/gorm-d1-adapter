@@ -2,9 +2,9 @@
 
 [中文文档](README.zh-CN.md) · [Main README](../../README.md)
 
-This is the project's recommended primary production deployment mode: the Worker exposes a narrow server-to-server API over a single D1 binding for Go services running outside Cloudflare.
+This Worker is the recommended way to put D1 in production with `gorm-d1-adapter`. It exposes a narrow server-to-server API over a single D1 binding, so Go services outside Cloudflare can access D1 without ever touching an Account API Token.
 
-Keep the Account API Token in the Cloudflare control plane rather than configuring it in application services; those services only need this Worker's access token. REST mode remains available for compatibility, migration, and operational fallback.
+The pattern is simple: the Account API Token stays inside Cloudflare. Application services only need this Worker's access token. REST mode remains available for compatibility, migration, and operational fallback.
 
 ```text
 GET  /health
@@ -12,11 +12,11 @@ POST /v1/query
 POST /v1/batch
 ```
 
-Every route requires `Authorization: Bearer <AUTH_TOKEN>`. No CORS headers are emitted because browser clients are not supported.
+Every route requires `Authorization: Bearer <AUTH_TOKEN>`. No CORS headers are set — browser clients are not supported.
 
 ## Configure and Deploy
 
-1. Copy `wrangler.example.toml` to the ignored local file `wrangler.toml`, then replace the D1 database name and IDs:
+1. Copy `wrangler.example.toml` to `wrangler.toml` (git-ignored), then replace the D1 database name and IDs:
 
 ```powershell
 Copy-Item wrangler.example.toml wrangler.toml
@@ -37,7 +37,7 @@ npx wrangler deploy --dry-run --outdir dist
 npx wrangler secret put AUTH_TOKEN
 ```
 
-4. Deploy the Worker:
+4. Deploy:
 
 ```powershell
 npm run deploy
@@ -70,13 +70,13 @@ Batch:
 }
 ```
 
-`query` uses `stmt.raw({ columnNames: true })`; `exec` uses `stmt.run()`; batch uses one `env.DB.batch(...)` call and preserves statement order.
+`query` uses `stmt.raw({ columnNames: true })`; `exec` uses `stmt.run()`; batch uses a single `env.DB.batch(...)` call and preserves statement order.
 
-`d1b64:` is reserved by the proxy wire protocol for BLOB values. A text value beginning with this prefix is interpreted as a Base64-encoded BLOB; callers that need to preserve such text verbatim must encode or escape it at the application layer.
+`d1b64:` is reserved by the proxy wire protocol for BLOB values. A text value starting with this prefix is interpreted as Base64-encoded binary. Callers that need to preserve such text verbatim must encode or escape it at the application layer.
 
 ## Safety Limits
 
-Defaults are provided in `wrangler.example.toml` and copied into the local `wrangler.toml`.
+Defaults are provided in `wrangler.example.toml` and copied into your local `wrangler.toml`.
 
 | Variable | Default | Meaning |
 |---|---:|---|
@@ -85,6 +85,6 @@ Defaults are provided in `wrangler.example.toml` and copied into the local `wran
 | `MAX_PARAMS` | 100 | Maximum parameters per statement |
 | `MAX_BATCH_STATEMENTS` | 50 | Maximum statements per batch |
 
-The SQL policy requires exactly one statement per request item and rejects `ATTACH` and `PRAGMA writable_schema`. It scans outside strings and comments before applying these rules.
+The SQL policy requires exactly one statement per request item and rejects `ATTACH` and `PRAGMA writable_schema`. The scanner skips string literals and comments before applying these rules.
 
-Logs contain the request ID, mode, latency, result metadata, and SHA-256 SQL hash. Full SQL text and Bearer tokens are not logged.
+Logs include the request ID, mode, latency, result metadata, and an SHA-256 SQL hash. Full SQL text and Bearer tokens are not logged.
