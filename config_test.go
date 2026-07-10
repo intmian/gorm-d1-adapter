@@ -126,3 +126,27 @@ func TestParseDSNRejectsInvalidTimeout(t *testing.T) {
 		t.Fatalf("expected %v, got %v", ErrInvalidTimeout, err)
 	}
 }
+
+func TestRESTConfigRequiresCredentials(t *testing.T) {
+	databaseID := "12345678-1234-1234-1234-123456789012"
+	for _, cfg := range []Config{
+		{DatabaseID: databaseID, APIToken: "token"},
+		{DatabaseID: databaseID, AccountID: "account"},
+	} {
+		if err := cfg.Validate(); err == nil {
+			t.Fatalf("expected REST credential validation error for %+v", cfg)
+		}
+	}
+}
+
+func TestRESTConfigRejectsInvalidBaseURL(t *testing.T) {
+	cfg := Config{
+		AccountID:  "account",
+		APIToken:   "token",
+		DatabaseID: "12345678-1234-1234-1234-123456789012",
+		BaseURL:    "ftp://example.com",
+	}
+	if err := cfg.Validate(); !errors.Is(err, ErrInvalidBaseURL) {
+		t.Fatalf("expected %v, got %v", ErrInvalidBaseURL, err)
+	}
+}

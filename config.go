@@ -49,8 +49,17 @@ func (c Config) Validate() error {
 	c = c.WithDefaults()
 	switch c.Mode {
 	case ExecutorModeREST:
+		if c.AccountID == "" {
+			return ErrMissingAccountID
+		}
+		if c.APIToken == "" {
+			return ErrMissingAPIToken
+		}
 		if c.DatabaseID == "" || len(c.DatabaseID) != 36 {
 			return ErrInvalidDB
+		}
+		if err := validateBaseURL(c.BaseURL); err != nil {
+			return err
 		}
 	case ExecutorModeWorker:
 		if err := validateWorkerEndpoint(c.WorkerEndpoint); err != nil {
@@ -169,6 +178,14 @@ func parseTimeout(value string) (time.Duration, error) {
 		return 0, ErrInvalidTimeout
 	}
 	return duration, nil
+}
+
+func validateBaseURL(baseURL string) error {
+	u, err := url.ParseRequestURI(baseURL)
+	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") || u.RawQuery != "" || u.Fragment != "" {
+		return ErrInvalidBaseURL
+	}
+	return nil
 }
 
 func validateWorkerEndpoint(endpoint string) error {

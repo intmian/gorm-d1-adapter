@@ -64,15 +64,41 @@ func (e *RestExecutor) Execute(ctx context.Context, req ExecuteRequest) (Execute
 }
 
 func (e *RestExecutor) Batch(ctx context.Context, req BatchRequest) (BatchResult, error) {
-	result := BatchResult{Results: make([]ExecuteResult, 0, len(req.Statements))}
-	for _, statement := range req.Statements {
-		one, err := e.Execute(ctx, statement)
-		result.Results = append(result.Results, one)
-		if err != nil {
-			return result, err
+	statements := make([]parameterizedStatement, len(req.Statements))
+	for i, statement := range req.Statements {
+		if statement.Mode != "" && statement.Mode != ModeExec && statement.Mode != ModeQuery {
+			return BatchResult{}, ErrInvalidMode
 		}
+		params, err := EncodeParams(statement.Params)
+		if err != nil {
+			return BatchResult{}, err
+		}
+		statements[i] = parameterizedStatement{SQL: statement.SQL, Params: params}
 	}
-	return result, nil
+	body, err := json.Marshal(parameterizedBatch{Batch: statements})
+	if err != nil {
+		return BatchResult{}, err
+	}
+
+	var resp d1Resp
+	auditLogID, err := e.apiCall(ctx, http.MethodPost, e.queryEndpoint(), body, &resp)
+	if err != nil {
+		return BatchResult{}, err
+	}
+	if !resp.Success {
+		return BatchResult{}, resp.error()
+	}
+	if len(resp.Result) != len(req.Statements) {
+		return BatchResult{}, ErrRESTResultCountMismatch
+	}
+	results := make([]ExecuteResult, len(resp.Result))
+	for i, result := range resp.Result {
+		if result == nil {
+			return BatchResult{}, ErrRESTResultCountMismatch
+		}
+		results[i] = ExecuteResult{ResultSet: result.toResultSet(), AuditLogID: auditLogID}
+	}
+	return BatchResult{Results: results, RequestID: req.RequestID}, nil
 }
 
 func (e *RestExecutor) Verify(ctx context.Context) error {
@@ -92,6 +118,8 @@ func (e *RestExecutor) queryEndpoint() string {
 }
 
 func (e *RestExecutor) tokenEndpoint() string {
+	// Config.APIToken is an account-owned token. User-owned tokens use a
+	// different Cloudflare endpoint and are not interchangeable here.
 	return fmt.Sprintf("/accounts/%s/tokens/verify", e.cfg.AccountID)
 }
 

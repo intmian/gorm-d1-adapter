@@ -2,6 +2,7 @@ package gormd1
 
 import (
 	"database/sql"
+	"strconv"
 	"strings"
 
 	d1 "github.com/intmian/gorm-d1-adapter"
@@ -33,6 +34,11 @@ func (dialector *Dialector) Name() string {
 func (dialector *Dialector) Initialize(db *gorm.DB) error {
 	db.Config.SkipDefaultTransaction = true
 	callbacks.RegisterDefaultCallbacks(db, &callbacks.Config{LastInsertIDReversed: true})
+	for name, builder := range dialector.ClauseBuilders() {
+		if _, exists := db.ClauseBuilders[name]; !exists {
+			db.ClauseBuilders[name] = builder
+		}
+	}
 
 	if dialector.Conn != nil {
 		db.ConnPool = dialector.Conn
@@ -47,12 +53,58 @@ func (dialector *Dialector) Initialize(db *gorm.DB) error {
 	return nil
 }
 
+func (dialector *Dialector) ClauseBuilders() map[string]clause.ClauseBuilder {
+	return map[string]clause.ClauseBuilder{
+		"INSERT": func(c clause.Clause, builder clause.Builder) {
+			if insert, ok := c.Expression.(clause.Insert); ok {
+				if stmt, ok := builder.(*gorm.Statement); ok {
+					stmt.WriteString("INSERT ")
+					if insert.Modifier != "" {
+						stmt.WriteString(insert.Modifier)
+						stmt.WriteByte(' ')
+					}
+					stmt.WriteString("INTO ")
+					if insert.Table.Name == "" {
+						stmt.WriteQuoted(stmt.Table)
+					} else {
+						stmt.WriteQuoted(insert.Table)
+					}
+					return
+				}
+			}
+			c.Build(builder)
+		},
+		"LIMIT": func(c clause.Clause, builder clause.Builder) {
+			if limit, ok := c.Expression.(clause.Limit); ok {
+				value := -1
+				if limit.Limit != nil && *limit.Limit >= 0 {
+					value = *limit.Limit
+				}
+				if value >= 0 || limit.Offset > 0 {
+					builder.WriteString("LIMIT ")
+					builder.WriteString(strconv.Itoa(value))
+				}
+				if limit.Offset > 0 {
+					builder.WriteString(" OFFSET ")
+					builder.WriteString(strconv.Itoa(limit.Offset))
+				}
+			}
+		},
+		"FOR": func(c clause.Clause, builder clause.Builder) {
+			if _, ok := c.Expression.(clause.Locking); ok {
+				return
+			}
+			c.Build(builder)
+		},
+	}
+}
+
 func (dialector *Dialector) DataTypeOf(field *schema.Field) string {
 	switch field.DataType {
 	case schema.Bool:
 		return "integer"
 	case schema.Int, schema.Uint:
-		if field.AutoIncrement && !field.PrimaryKey {
+		if field.AutoIncrement {
 			return "integer PRIMARY KEY AUTOINCREMENT"
 		}
 		return "integer"
@@ -61,6 +113,9 @@ func (dialector *Dialector) DataTypeOf(field *schema.Field) string {
 	case schema.String:
 		return "text"
 	case schema.Time:
+		if value, ok := field.TagSettings["TYPE"]; ok {
+			return value
+		}
 		return "datetime"
 	case schema.Bytes:
 		return "blob"
@@ -69,7 +124,10 @@ func (dialector *Dialector) DataTypeOf(field *schema.Field) string {
 	}
 }
 
-func (dialector *Dialector) DefaultValueOf(*schema.Field) clause.Expression {
+func (dialector *Dialector) DefaultValueOf(field *schema.Field) clause.Expression {
+	if field.AutoIncrement {
+		return clause.Expr{SQL: "NULL"}
+	}
 	return clause.Expr{SQL: "DEFAULT"}
 }
 

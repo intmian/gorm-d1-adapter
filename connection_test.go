@@ -2,18 +2,24 @@ package d1
 
 import (
 	"context"
+	"database/sql"
 	"database/sql/driver"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 )
 
 type mockExecutor struct {
-	verifyErr error
-	exec      func(context.Context, ExecuteRequest) (ExecuteResult, error)
+	verifyErr   error
+	verifyCalls int
+	exec        func(context.Context, ExecuteRequest) (ExecuteResult, error)
 }
 
 func (m *mockExecutor) Verify(context.Context) error {
+	m.verifyCalls++
 	return m.verifyErr
 }
 
@@ -112,5 +118,52 @@ func TestRowsDecodeValues(t *testing.T) {
 	}
 	if dest[0] != int64(42) || dest[1] != true || !dest[2].(time.Time).Equal(now) || string(dest[3].([]byte)) != string([]byte{1, 2, 3}) {
 		t.Fatalf("unexpected decoded values: %#v", dest)
+	}
+}
+
+func TestConnectionPingVerifiesExecutor(t *testing.T) {
+	executor := &mockExecutor{}
+	conn, err := OpenWithExecutor(Config{}, executor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	if err := conn.Ping(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if executor.verifyCalls != 2 {
+		t.Fatalf("expected open and ping verification, got %d calls", executor.verifyCalls)
+	}
+}
+
+func TestDatabaseSQLPingVerifiesOnce(t *testing.T) {
+	verifyCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/health" {
+			http.NotFound(w, r)
+			return
+		}
+		verifyCalls++
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+	}))
+	defer server.Close()
+
+	connector, err := NewDriver().OpenConnector(NewDSN(Config{
+		Mode:           ExecutorModeWorker,
+		WorkerEndpoint: server.URL,
+		WorkerToken:    "token",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	db := sql.OpenDB(connector)
+	defer db.Close()
+
+	if err := db.PingContext(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if verifyCalls != 1 {
+		t.Fatalf("expected one remote verification, got %d", verifyCalls)
 	}
 }

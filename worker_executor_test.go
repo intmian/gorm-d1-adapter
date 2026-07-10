@@ -163,7 +163,11 @@ func TestWorkerExecutorRejectsInvalidModeAndBatchCount(t *testing.T) {
 }
 
 func TestNewExecutorSelectsConfiguredMode(t *testing.T) {
-	rest, err := NewExecutor(Config{DatabaseID: "12345678-1234-1234-1234-123456789012"})
+	rest, err := NewExecutor(Config{
+		AccountID:  "account",
+		APIToken:   "token",
+		DatabaseID: "12345678-1234-1234-1234-123456789012",
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

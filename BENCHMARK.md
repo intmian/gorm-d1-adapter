@@ -1,24 +1,21 @@
 # Benchmarks
 
-## Official Reporting Policy
+[中文文档](BENCHMARK.zh-CN.md) · [Main README](README.md)
 
-All reported performance results must be produced from the SSH host `hk`. Local
-Windows runs are development-only checks and must not be used in performance
-tables, release decisions, or external claims.
+## Reporting Policy
+
+All reported performance results must be produced from a test environment in the same geographic region as the target deployment. Local Windows runs are development-only checks and must not be used in performance tables, release decisions, or external claims.
 
 The official comparison must keep these conditions fixed:
 
-1. Request origin: `hk`.
+1. Request origin and target deployment: the same region.
 2. Runtime: `golang:1.25` Docker image on Ubuntu Linux x86_64.
-3. Database: the same Cloudflare D1 database for the legacy adapter, REST, and Worker.
+3. Database: the same Cloudflare D1 database for the Legacy Adapter, REST, and Worker.
 4. Percentile suite: 100 samples per operation, concurrency 8, writes enabled.
 5. Go benchmark suite: `-benchmem -benchtime 10x`.
-6. Correctness suites must pass with zero sampled failures and zero temporary
-   tables remaining after cleanup.
+6. Correctness suites must pass with zero sampled failures and zero temporary tables remaining after cleanup.
 
-Official run ID: `hk-20260710-162100`. The consolidated result is recorded
-below. Raw run artifacts remain under the ignored local `runs/` directory and
-are not part of the source distribution.
+Official run ID: `20260710-162100`. The consolidated result is recorded below. Raw run artifacts remain under the ignored local `runs/` directory and are not part of the source distribution.
 
 ## Verification Status
 
@@ -27,10 +24,10 @@ Date: 2026-07-10
 - REST correctness: PASS
 - Worker correctness: PASS
 - Worker batch rollback: PASS
-- Legacy adapter correctness: PASS
+- Legacy Adapter correctness: PASS
 - Sampled operations: REST 1100/1100, Worker 1100/1100
 - Standard Go benchmarks: REST 17/17, Worker 17/17
-- Legacy adapter Go benchmarks: 15/15
+- Legacy Adapter Go benchmarks: 15/15
 - Remaining temporary D1 tables: 0
 - Remaining remote containers and temporary files: 0
 
@@ -50,11 +47,7 @@ Date: 2026-07-10
 | batch_crud | 428.84 | 64.79 | 6.62x | 546.44 | 88.83 | 6.15x |
 | auto_migrate | 216.77 | 127.15 | 1.70x | 251.48 | 144.66 | 1.74x |
 
-Single-statement p50 improves by 1.61x to 1.88x. Combining two reads into one
-Worker batch improves p50 by 3.28x. Atomic batch CRUD improves p50 by 6.62x.
-The verify result is not a SQL latency comparison: REST calls the Cloudflare
-control-plane token verification endpoint, while Worker calls its edge health
-endpoint.
+Single-statement p50 improves by 1.61x to 1.88x. Combining two reads into one Worker batch improves p50 by 3.28x. Atomic batch CRUD improves p50 by 6.62x. The verify result is not a SQL latency comparison: REST calls the Cloudflare control-plane token verification endpoint, while Worker calls its edge health endpoint.
 
 ## Standard Go Benchmarks
 
@@ -77,13 +70,11 @@ endpoint.
 | FiveConcurrentOpenAndAutoMigrate | 541.64 | 155.46 | 3.48x |
 | StdlibPreparedSelectOne | 108.14 | 61.34 | 1.76x |
 
-`StdlibOpen` is intentionally excluded because it only allocates a local
-`database/sql` handle and performs no network operation.
+`StdlibOpen` is intentionally excluded because it only allocates a local `database/sql` handle and performs no network operation.
 
 ## Legacy Adapter, REST, and Worker
 
-The strict comparison below uses matching benchmark workloads from the same
-`hk` host, D1 database, Docker runtime, and `10x` setting.
+The strict comparison below uses matching benchmark workloads from the same region, D1 database, Docker runtime, and `10x` setting.
 
 | Comparable benchmark | Legacy ms/op | REST ms/op | Worker ms/op | REST/Worker | Legacy/Worker |
 |---|---:|---:|---:|---:|---:|
@@ -99,43 +90,32 @@ The strict comparison below uses matching benchmark workloads from the same
 | DeleteOne | 102.65 | 132.25 | 81.70 | 1.62x | 1.26x |
 | StdlibPreparedSelectOne | 82.74 | 108.14 | 61.34 | 1.76x | 1.35x |
 
-These same-name workloads changed between harness versions and are directional,
-not strict transport comparisons:
+These same-name workloads changed between harness versions and are directional, not strict transport comparisons:
 
 | Benchmark | Legacy ms/op | Worker ms/op | Ratio | Workload difference |
 |---|---:|---:|---:|---|
-| AutoMigrateSmallTable | 173.62 | 129.11 | 1.34x | current model adds a BLOB field |
-| InsertSelectUpdateDelete | 356.59 | 260.36 | 1.37x | legacy uses direct SQL; current adapter uses GORM model APIs |
-| FiveConcurrentOpenAndAutoMigrate | 437.70 | 155.46 | 2.82x | legacy uses five models; current adapter uses one model shape |
+| AutoMigrateSmallTable | 173.62 | 129.11 | 1.34x | Current model adds a BLOB field |
+| InsertSelectUpdateDelete | 356.59 | 260.36 | 1.37x | Legacy uses direct SQL; current adapter uses GORM model APIs |
+| FiveConcurrentOpenAndAutoMigrate | 437.70 | 155.46 | 2.82x | Legacy uses five models; current adapter uses one model shape |
 
-The legacy adapter has no true batch equivalent. Comparing its ordinary CRUD at
-356.59 ms/op with Worker `ExecutorBatchCRUD` at 71.65 ms/op gives a 4.98x
-architecture-level improvement, but batching changes both request shape and
-atomicity.
+The Legacy Adapter has no true batch equivalent. Comparing its ordinary CRUD at 356.59 ms/op with Worker `ExecutorBatchCRUD` at 71.65 ms/op gives a 4.98x architecture-level improvement, but batching changes both request shape and atomicity.
 
 ## Running Checks
 
-The PowerShell runner can execute correctness and exploratory performance checks
-from a developer machine:
+The PowerShell runner can execute correctness and exploratory performance checks from a developer machine:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/benchmark.ps1 -Mode both -Samples 30 -Concurrency 8 -Full
 ```
 
-Its local latency output is not an official benchmark. A formal benchmark must
-run the same suite from `hk` under the policy above and archive its raw JSON and
-Go benchmark logs under `runs/hk-<timestamp>/`.
+Its local latency output is not an official benchmark. A formal benchmark must run the same suite from the same region as the target deployment and archive its raw JSON and Go benchmark logs under `runs/benchmark-<timestamp>/`.
 
-The runner never writes secret values. Missing credentials produce a `blocked`
-or `partial` report containing only missing variable names.
+The runner never writes secret values. Missing credentials produce a `blocked` or `partial` report containing only missing variable names.
 
 ## Interpretation Rules
 
-1. Compare transports only when host, D1 database, sample count, concurrency,
-   write mode, and test window match.
+1. Compare transports only when region, D1 database, sample count, concurrency, write mode, and test window match.
 2. Keep correctness, failure count, and cleanup results with every latency report.
 3. Do not mix percentile-runner values with Go `ms/op` values in one ratio.
 4. Label workload drift and architecture-level batch comparisons explicitly.
-5. Require at least three successful `hk` runs before publishing stable
-   performance claims. The current run is valid engineering evidence, not a
-   stability claim.
+5. Require at least three successful same-region runs before publishing stable performance claims. The current run is valid engineering evidence, not a stability claim.

@@ -250,3 +250,60 @@ func TestIntegrationGormCRUDAndUnsupportedTransaction(t *testing.T) {
 		t.Fatal("transaction callback should not run when Begin fails")
 	}
 }
+
+func TestIntegrationGormDialectMetadataAndForeignKeyDrop(t *testing.T) {
+	requireWrites(t)
+
+	db := openIntegrationGorm(t)
+	defer closeIntegrationGorm(t, db)
+
+	parentTable := uniqueTable("d1_adapter_parent")
+	childTable := uniqueTable("d1_adapter_child")
+	defer db.Exec("DROP TABLE IF EXISTS " + childTable)
+	defer db.Exec("DROP TABLE IF EXISTS " + parentTable)
+
+	if err := db.Exec("CREATE TABLE " + parentTable + " (id INTEGER PRIMARY KEY)").Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec("CREATE TABLE " + childTable + " (id INTEGER PRIMARY KEY, parent_id INTEGER NOT NULL REFERENCES " + parentTable + "(id))").Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec("INSERT INTO " + parentTable + " (id) VALUES (1), (2)").Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec("INSERT INTO " + childTable + " (id, parent_id) VALUES (1, 1)").Error; err != nil {
+		t.Fatal(err)
+	}
+
+	var rows []struct{ ID int64 }
+	if err := db.Table(parentTable).Select("id").Order("id").Offset(1).Find(&rows).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].ID != 2 {
+		t.Fatalf("unexpected offset rows: %+v", rows)
+	}
+
+	tables, err := db.Migrator().GetTables()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsString(tables, parentTable) || !containsString(tables, childTable) {
+		t.Fatalf("migrator table list is missing test tables: %v", tables)
+	}
+
+	if err := db.Migrator().DropTable(parentTable); err == nil {
+		t.Fatal("expected foreign key enforcement when dropping a referenced parent table")
+	}
+	if err := db.Migrator().DropTable(parentTable, childTable); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}

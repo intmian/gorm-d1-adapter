@@ -1,39 +1,47 @@
 # gorm-d1-adapter
 
-`gorm-d1-adapter` 是一个面向 Cloudflare D1 的 Go 数据库适配器，让应用可以通过 GORM 或 `database/sql` 访问 D1。
+[中文文档](README.zh-CN.md) · [Benchmarks](BENCHMARK.md) · [中文基准测试](BENCHMARK.zh-CN.md)
 
-## 功能
+`gorm-d1-adapter` is a Go database adapter for Cloudflare D1, accessible through GORM or `database/sql`.
 
-- 支持 GORM 和 `database/sql`。
-- 支持 Cloudflare REST API 与 Worker Proxy 两种访问模式。
-- 提供查询、写入、迁移和批处理能力。
-- 统一常用数据类型在 Go 与 D1 之间的转换。
-- REST 与 Worker 模式可以通过配置切换，便于迁移和回滚。
+## Features
 
-## 项目结构
+- Supports GORM and `database/sql`.
+- **Worker Proxy is the recommended primary production deployment mode**; the Cloudflare REST API remains available for compatibility, migration, and operational access.
+- Provides query, write, migration, and batch capabilities.
+- Normalizes common data-type conversions between Go and D1.
+- Switches between REST and Worker modes through configuration for migration and rollback.
+
+## Worker Proxy First
+
+For production, deploy the included D1 Worker Proxy first and have Go services access only that Worker. It uses the D1 binding inside Cloudflare, keeps the Cloudflare Account API Token out of application services, and supplies token authentication, request limits, request IDs, and redacted logs.
+
+Worker `env.DB.batch()` also combines multiple statements into one edge request while retaining D1 native batch atomicity. REST mode suits existing integrations, migration, fallback, or constrained operational scenarios; both modes share the same GORM and `database/sql` usage.
+
+## Project Layout
 
 ```text
 gorm-d1-adapter/
-├── config.go / executor.go              配置与公共执行协议
-├── driver.go / connection.go            database/sql 驱动实现
-├── rest_executor.go / rest_protocol.go  Cloudflare REST 客户端
+├── config.go / executor.go              Configuration and executor contracts
+├── driver.go / connection.go            database/sql driver implementation
+├── rest_executor.go / rest_protocol.go  Cloudflare REST client
 ├── worker_executor.go / worker_protocol.go
-│                                         Worker Proxy 客户端
-├── codec.go / trace.go / errors.go       公共支撑能力
-├── gormd1/                               GORM 接入与迁移
-├── stdlib/                               database/sql 驱动注册
+│                                         Worker Proxy client
+├── codec.go / trace.go / errors.go       Shared support utilities
+├── gormd1/                               GORM integration and migrator
+├── stdlib/                               database/sql driver registration
 ├── workers/d1-proxy/                     Cloudflare Worker Proxy
-├── cmd/d1bench/                          性能测试工具
-└── scripts/                              验证与 benchmark 脚本
+├── cmd/d1bench/                          Benchmark tool
+└── scripts/                              Validation and benchmark scripts
 ```
 
-## 接入
+## Quick Start
 
 ```bash
 go get github.com/intmian/gorm-d1-adapter
 ```
 
-应用创建 `d1.Config`，选择 REST 或 Worker 模式，然后通过 `gormd1.OpenConfig` 接入 GORM：
+Create a `d1.Config`, select Worker or REST mode, then connect it to GORM with `gormd1.OpenConfig`:
 
 ```go
 cfg := d1.Config{
@@ -45,6 +53,47 @@ cfg := d1.Config{
 db, err := gorm.Open(gormd1.OpenConfig(cfg), &gorm.Config{})
 ```
 
-REST 模式使用 Cloudflare Account、API Token 和 D1 Database ID；Worker 模式使用已部署的 Worker Endpoint 和访问 Token。业务代码不需要因模式切换而改变。
+Worker mode is the recommended default and uses a deployed Worker endpoint and access token; REST mode uses a Cloudflare Account, an Account API Token, and a D1 Database ID. Application code does not need to change when switching modes.
 
-Worker 部署说明见 [`workers/d1-proxy/README.md`](workers/d1-proxy/README.md)，性能测试口径和结果见 [`BENCHMARK.md`](BENCHMARK.md)。
+See [the Worker deployment guide](workers/d1-proxy/README.md) and [the benchmark report](BENCHMARK.md).
+
+## Problems It Solves
+
+- Lets Go services outside Cloudflare access D1 safely without being rewritten for the Workers runtime.
+- Brings D1 to existing GORM or `database/sql` code through familiar Go database interfaces.
+- Isolates the Cloudflare Account API Token behind the Worker binding, reducing the need for application services to hold privileged credentials.
+- Combines multiple reads and writes into one atomic batch, reducing network round trips and rolling back the whole batch on failure.
+- Switches smoothly between Worker and REST transports for phased migration, existing-system compatibility, and fallback.
+- Makes GORM migration support explicit: it prioritizes safe operations such as creating tables, adding columns, and indexes instead of silently performing destructive DDL.
+
+## Performance
+
+Under the same-region, same-D1, and same-container-runtime conditions, Worker Proxy is faster than the Legacy Adapter on strictly comparable p50 workloads. Lower is better; this is the performance case for making Worker the primary mode.
+
+```mermaid
+xychart-beta
+    title "Legacy Adapter vs Worker Proxy p50 (lower is better)"
+    x-axis ["GORM read", "Param read", "Concurrent read", "Insert", "Delete"]
+    y-axis "milliseconds" 0 --> 120
+    bar "Legacy Adapter" [114.36, 94.31, 53.15, 93.86, 102.65]
+    bar "Worker Proxy" [64.58, 64.93, 31.43, 70.65, 81.70]
+```
+
+| Workload | Legacy Adapter p50 | Worker Proxy p50 | Worker gain |
+|---|---:|---:|---:|
+| GORM single read | 114.36 ms | 64.58 ms | 1.77× |
+| Parameterized read | 94.31 ms | 64.93 ms | 1.45× |
+| Concurrent read | 53.15 ms | 31.43 ms | 1.69× |
+| Insert | 93.86 ms | 70.65 ms | 1.33× |
+| Delete | 102.65 ms | 81.70 ms | 1.26× |
+
+The chart uses matching workloads from a real run in the same region, against the same D1 database and Docker runtime, with the same `10x` benchmark setting. The Legacy Adapter has no true atomic batch equivalent; comparing its ordinary CRUD (356.59 ms/op) with Worker Proxy batch CRUD (71.65 ms/op) yields a 4.98× architecture-level improvement, but the workload shapes differ, so it is excluded from the strict comparison chart. See [the benchmark report](BENCHMARK.md) for methodology, correctness status, and rerun requirements.
+
+## Compatibility and Limitations
+
+- The BLOB wire protocol reserves the `d1b64:` prefix. Worker mode decodes it as a BLOB, so ordinary text beginning with this prefix is read as a BLOB. REST mode has no equivalent BLOB decoding layer; use Worker mode when reliable `[]byte` storage is required.
+- REST `APIToken` must be a Cloudflare Account API Token and is verified through `/accounts/{account_id}/tokens/verify`. User API Tokens use `/user/tokens/verify` and are not currently supported as REST credentials.
+- Boolean and time values are decoded by column-name convention: `flag`, `active`, and `is_*` are treated as booleans; columns containing `time` or ending in `_at` or `date` are parsed as RFC3339 timestamps when possible. Other columns retain D1's primitive result type.
+- The driver does not support interactive transactions. Worker batches use D1's native transactional batch API; REST batches use Cloudflare's native REST batch request.
+- REST `BaseURL` and Worker `Endpoint` must include `http://` or `https://`. `database/sql.Ping` performs a real REST token verification or Worker health request; GORM performs one Ping by default when opening the database.
+- GORM migrations support non-destructive operations such as creating tables, adding columns, and creating indexes. Altering or dropping columns and dynamically creating or dropping constraints explicitly return unsupported errors.

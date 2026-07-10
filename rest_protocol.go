@@ -11,6 +11,10 @@ type parameterizedStatement struct {
 	Params []any  `json:"params,omitempty"`
 }
 
+type parameterizedBatch struct {
+	Batch []parameterizedStatement `json:"batch"`
+}
+
 type d1RespMessage struct {
 	Code    int    `json:"code"`
 	Message string `json:"message"`

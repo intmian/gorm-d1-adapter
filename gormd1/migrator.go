@@ -23,13 +23,9 @@ func (dialector *Dialector) Migrator(db *gorm.DB) gorm.Migrator {
 	}}}
 }
 
+// RunWithoutForeignKey is retained for source compatibility. D1 cannot turn
+// off foreign key enforcement across requests, so fc runs with enforcement on.
 func (m Migrator) RunWithoutForeignKey(fc func() error) error {
-	var enabled int
-	m.DB.Raw("PRAGMA foreign_keys").Scan(&enabled)
-	if enabled == 1 {
-		m.DB.Exec("PRAGMA foreign_keys = OFF")
-		defer m.DB.Exec("PRAGMA foreign_keys = ON")
-	}
 	return fc()
 }
 
@@ -41,31 +37,36 @@ func (m Migrator) HasTable(value any) bool {
 	return count > 0
 }
 
+func (m Migrator) GetTables() (tableList []string, err error) {
+	err = m.DB.Raw("SELECT name FROM sqlite_master WHERE type = ?", "table").Scan(&tableList).Error
+	return tableList, err
+}
+
 func (m Migrator) DropTable(values ...any) error {
-	return m.RunWithoutForeignKey(func() error {
-		values = m.ReorderModels(values, false)
-		tx := m.DB.Session(&gorm.Session{})
-		for i := len(values) - 1; i >= 0; i-- {
-			if err := m.RunWithValue(values[i], func(stmt *gorm.Statement) error {
-				return tx.Exec("DROP TABLE IF EXISTS ?", clause.Table{Name: stmt.Table}).Error
-			}); err != nil {
-				return err
-			}
+	values = m.ReorderModels(values, false)
+	tx := m.DB.Session(&gorm.Session{})
+	for i := len(values) - 1; i >= 0; i-- {
+		if err := m.RunWithValue(values[i], func(stmt *gorm.Statement) error {
+			return tx.Exec("DROP TABLE IF EXISTS ?", clause.Table{Name: stmt.Table}).Error
+		}); err != nil {
+			return err
 		}
-		return nil
-	})
+	}
+	return nil
 }
 
 func (m Migrator) HasColumn(value any, name string) bool {
 	var count int
 	m.RunWithValue(value, func(stmt *gorm.Statement) error {
-		if field := stmt.Schema.LookUpField(name); field != nil {
-			name = field.DBName
+		if stmt.Schema != nil {
+			if field := stmt.Schema.LookUpField(name); field != nil {
+				name = field.DBName
+			}
 		}
 		if name != "" {
 			m.DB.Raw(
-				"SELECT count(*) FROM sqlite_master WHERE type = ? AND tbl_name = ? AND (sql LIKE ? OR sql LIKE ? OR sql LIKE ?)",
-				"table", stmt.Table, `%"`+name+`" %`, `%`+name+` %`, "%`"+name+"`%",
+				"SELECT count(*) FROM sqlite_master WHERE type = ? AND tbl_name = ? AND (sql LIKE ? OR sql LIKE ? OR sql LIKE ? OR sql LIKE ? OR sql LIKE ?)",
+				"table", stmt.Table, `%"`+name+`" %`, `%`+name+` %`, "%`"+name+"`%", "%["+name+"]%", "%\t"+name+"\t%",
 			).Row().Scan(&count)
 		}
 		return nil
@@ -126,6 +127,9 @@ func (m Migrator) BuildIndexOptions(opts []schema.IndexOption, stmt *gorm.Statem
 
 func (m Migrator) CreateIndex(value any, name string) error {
 	return m.RunWithValue(value, func(stmt *gorm.Statement) error {
+		if stmt.Schema == nil {
+			return fmt.Errorf("failed to create index with name %v", name)
+		}
 		idx := stmt.Schema.LookIndex(name)
 		if idx == nil {
 			return fmt.Errorf("failed to create index with name %v", name)
@@ -152,8 +156,10 @@ func (m Migrator) CreateIndex(value any, name string) error {
 func (m Migrator) HasIndex(value any, name string) bool {
 	var count int
 	m.RunWithValue(value, func(stmt *gorm.Statement) error {
-		if idx := stmt.Schema.LookIndex(name); idx != nil {
-			name = idx.Name
+		if stmt.Schema != nil {
+			if idx := stmt.Schema.LookIndex(name); idx != nil {
+				name = idx.Name
+			}
 		}
 		if name != "" {
 			m.DB.Raw("SELECT count(*) FROM sqlite_master WHERE type = ? AND tbl_name = ? AND name = ?", "index", stmt.Table, name).Row().Scan(&count)
@@ -179,8 +185,10 @@ func (m Migrator) RenameIndex(value any, oldName, newName string) error {
 
 func (m Migrator) DropIndex(value any, name string) error {
 	return m.RunWithValue(value, func(stmt *gorm.Statement) error {
-		if idx := stmt.Schema.LookIndex(name); idx != nil {
-			name = idx.Name
+		if stmt.Schema != nil {
+			if idx := stmt.Schema.LookIndex(name); idx != nil {
+				name = idx.Name
+			}
 		}
 		return m.DB.Exec("DROP INDEX ?", clause.Column{Name: name}).Error
 	})

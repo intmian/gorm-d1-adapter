@@ -29,7 +29,14 @@ type Connector struct {
 }
 
 func (c *Connector) Connect(ctx context.Context) (driver.Conn, error) {
-	return OpenConfigContext(ctx, c.cfg)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	executor, err := NewExecutor(c.cfg)
+	if err != nil {
+		return nil, err
+	}
+	return newConnection(c.cfg, executor), nil
 }
 
 func (c *Connector) Driver() driver.Driver {

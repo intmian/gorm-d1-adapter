@@ -44,15 +44,19 @@ func OpenWithExecutorContext(ctx context.Context, cfg Config, executor Executor)
 	if executor == nil {
 		return nil, ErrInvalidExecutorConfig
 	}
-	conn := &Connection{
-		ID:       newConnectionID(),
-		cfg:      cfg.WithDefaults(),
-		executor: executor,
-	}
+	conn := newConnection(cfg, executor)
 	if err := executor.Verify(ctx); err != nil {
 		return nil, err
 	}
 	return conn, nil
+}
+
+func newConnection(cfg Config, executor Executor) *Connection {
+	return &Connection{
+		ID:       newConnectionID(),
+		cfg:      cfg.WithDefaults(),
+		executor: executor,
+	}
 }
 
 func (c *Connection) Close() error {
@@ -82,11 +86,11 @@ func (c *Connection) BeginTx(context.Context, driver.TxOptions) (driver.Tx, erro
 	return nil, ErrUnsupportedTransaction
 }
 
-func (c *Connection) Ping(context.Context) error {
+func (c *Connection) Ping(ctx context.Context) error {
 	if c.isClosed() {
 		return ErrClosed
 	}
-	return nil
+	return c.executor.Verify(ctx)
 }
 
 func (c *Connection) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
