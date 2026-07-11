@@ -1,7 +1,10 @@
 package gormd1
 
 import (
+	"database/sql"
 	"fmt"
+	"reflect"
+	"strconv"
 	"strings"
 
 	d1 "github.com/intmian/gorm-d1-adapter"
@@ -40,6 +43,102 @@ func (m Migrator) HasTable(value any) bool {
 func (m Migrator) GetTables() (tableList []string, err error) {
 	err = m.DB.Raw("SELECT name FROM sqlite_master WHERE type = ?", "table").Scan(&tableList).Error
 	return tableList, err
+}
+
+// ColumnTypes reads declared schema metadata instead of relying on
+// database/sql rows metadata. D1 query results only contain column names, so
+// the generic GORM implementation cannot report types or default values.
+func (m Migrator) ColumnTypes(value any) (columnTypes []gorm.ColumnType, err error) {
+	err = m.RunWithValue(value, func(stmt *gorm.Statement) error {
+		rows, err := m.DB.Raw("PRAGMA table_info(?)", clause.Table{Name: stmt.Table}).Rows()
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+
+		for rows.Next() {
+			var (
+				cid          int
+				name         string
+				declaredType string
+				notNull      int
+				defaultValue sql.NullString
+				primaryKey   int
+			)
+			if err := rows.Scan(&cid, &name, &declaredType, &notNull, &defaultValue, &primaryKey); err != nil {
+				return err
+			}
+
+			dataType, length, precision, scale := parseDeclaredType(declaredType)
+			columnType := migrator.ColumnType{
+				NameValue:         sql.NullString{String: name, Valid: true},
+				DataTypeValue:     sql.NullString{String: dataType, Valid: true},
+				ColumnTypeValue:   sql.NullString{String: declaredType, Valid: declaredType != ""},
+				PrimaryKeyValue:   sql.NullBool{Bool: primaryKey > 0, Valid: true},
+				LengthValue:       sql.NullInt64{Valid: true},
+				DecimalSizeValue:  sql.NullInt64{Valid: true},
+				ScaleValue:        sql.NullInt64{Valid: true},
+				NullableValue:     sql.NullBool{Bool: notNull == 0, Valid: true},
+				ScanTypeValue:     reflect.TypeOf((*any)(nil)).Elem(),
+				DefaultValueValue: normalizeDefaultValue(defaultValue),
+			}
+			if length >= 0 {
+				columnType.LengthValue = sql.NullInt64{Int64: length, Valid: true}
+			}
+			if precision >= 0 {
+				columnType.DecimalSizeValue = sql.NullInt64{Int64: precision, Valid: true}
+				columnType.ScaleValue = sql.NullInt64{Int64: scale, Valid: true}
+			}
+			columnTypes = append(columnTypes, columnType)
+		}
+		return rows.Err()
+	})
+	return columnTypes, err
+}
+
+func parseDeclaredType(declaredType string) (dataType string, length, precision, scale int64) {
+	declaredType = strings.TrimSpace(declaredType)
+	dataType = declaredType
+	length, precision, scale = -1, -1, -1
+
+	open := strings.LastIndexByte(declaredType, '(')
+	if open < 0 || !strings.HasSuffix(declaredType, ")") {
+		return dataType, length, precision, scale
+	}
+
+	args := strings.Split(declaredType[open+1:len(declaredType)-1], ",")
+	first, err := strconv.ParseInt(strings.TrimSpace(args[0]), 10, 64)
+	if err != nil {
+		return dataType, length, precision, scale
+	}
+	dataType = strings.TrimSpace(declaredType[:open])
+	if len(args) == 1 {
+		return dataType, first, precision, scale
+	}
+	if len(args) == 2 {
+		second, err := strconv.ParseInt(strings.TrimSpace(args[1]), 10, 64)
+		if err == nil {
+			precision, scale = first, second
+		}
+	}
+	return dataType, length, precision, scale
+}
+
+func normalizeDefaultValue(value sql.NullString) sql.NullString {
+	if !value.Valid || strings.EqualFold(strings.TrimSpace(value.String), "NULL") {
+		return sql.NullString{}
+	}
+
+	value.String = strings.TrimSpace(value.String)
+	if len(value.String) >= 2 {
+		quote := value.String[0]
+		if (quote == '\'' || quote == '"') && value.String[len(value.String)-1] == quote {
+			value.String = value.String[1 : len(value.String)-1]
+			doubled := string([]byte{quote, quote})
+			value.String = strings.ReplaceAll(value.String, doubled, string(quote))
+		}
+	}
+	return value
 }
 
 func (m Migrator) DropTable(values ...any) error {
