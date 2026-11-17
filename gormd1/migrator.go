@@ -173,6 +173,31 @@ func (m Migrator) HasColumn(value any, name string) bool {
 	return count > 0
 }
 
+// MigrateColumn compares an existing column with the model the same way GORM
+// does, except for the default value. SQLite cannot change a column's default
+// without rebuilding the table, which this adapter refuses to do, so a
+// default-only difference would make every later AutoMigrate fail. Defaults
+// still apply when a column is added; on existing columns they are left as is.
+func (m Migrator) MigrateColumn(value any, field *schema.Field, columnType gorm.ColumnType) error {
+	return m.Migrator.MigrateColumn(value, field, modelDefault{baseColumn: columnType, field: field})
+}
+
+// baseColumn is embedded under its own name because gorm.ColumnType has a
+// ColumnType method, which an embedded field of that name would shadow.
+type baseColumn = gorm.ColumnType
+
+// modelDefault reports the model's own default value, so the default check in
+// GORM's MigrateColumn always sees the column as unchanged.
+type modelDefault struct {
+	baseColumn
+	field *schema.Field
+}
+
+func (c modelDefault) DefaultValue() (string, bool) {
+	f := c.field
+	return f.DefaultValue, f.HasDefaultValue && (f.DefaultValueInterface != nil || !strings.EqualFold(f.DefaultValue, "NULL"))
+}
+
 func (m Migrator) AlterColumn(any, string) error {
 	return d1.ErrDestructiveMigration
 }

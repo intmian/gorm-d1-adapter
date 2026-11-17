@@ -134,3 +134,71 @@ func TestAutoMigrateWithDefaultIsIdempotent(t *testing.T) {
 		t.Fatalf("unexpected revision default: value=%q ok=%v", value, ok)
 	}
 }
+
+// A column whose default differs from the model (added by an older model, or
+// the tag was removed later) must not make AutoMigrate try to alter it.
+func TestAutoMigrateIgnoresDefaultOnlyDifference(t *testing.T) {
+	type withoutDefault struct {
+		ID       int64 `gorm:"primaryKey"`
+		Revision int
+		Paused   bool
+	}
+	type withDefault struct {
+		ID       int64 `gorm:"primaryKey"`
+		Revision int   `gorm:"default:2"`
+		Paused   bool  `gorm:"default:true"`
+	}
+
+	var sqls []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health" {
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+			return
+		}
+		var payload struct {
+			SQL string `json:"sql"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Error(err)
+		}
+		sqls = append(sqls, payload.SQL)
+		result := map[string]any{"meta": map[string]any{}, "columns": []string{}, "rows": []any{}}
+		switch {
+		case strings.Contains(payload.SQL, "SELECT count(*) FROM sqlite_master"):
+			result = map[string]any{"meta": map[string]any{}, "columns": []string{"count(*)"}, "rows": [][]any{{1}}}
+		case strings.HasPrefix(payload.SQL, "PRAGMA table_info"):
+			result = map[string]any{
+				"meta":    map[string]any{},
+				"columns": []string{"cid", "name", "type", "notnull", "dflt_value", "pk"},
+				"rows": [][]any{
+					{0, "id", "integer", 0, nil, 1},
+					{1, "revision", "integer", 0, "1", 0},
+					{2, "paused", "integer", 0, "false", 0},
+				},
+			}
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "result": result})
+	}))
+	defer server.Close()
+
+	db, err := gorm.Open(OpenConfig(d1.Config{
+		Mode:           d1.ExecutorModeWorker,
+		WorkerEndpoint: server.URL,
+		WorkerToken:    "token",
+	}), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := db.Table("notes").AutoMigrate(&withoutDefault{}); err != nil {
+		t.Fatalf("model without default: %v", err)
+	}
+	if err := db.Table("notes").AutoMigrate(&withDefault{}); err != nil {
+		t.Fatalf("model with a different default: %v", err)
+	}
+	for _, query := range sqls {
+		if strings.HasPrefix(strings.ToUpper(query), "ALTER") {
+			t.Fatalf("unexpected schema change: %s", query)
+		}
+	}
+}
