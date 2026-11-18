@@ -14,6 +14,11 @@ import (
 	"gorm.io/gorm/schema"
 )
 
+const (
+	boolColumnType = "integer"
+	legacyBoolType = "string"
+)
+
 type Migrator struct {
 	migrator.Migrator
 }
@@ -174,28 +179,39 @@ func (m Migrator) HasColumn(value any, name string) bool {
 }
 
 // MigrateColumn compares an existing column with the model the same way GORM
-// does, except for the default value. SQLite cannot change a column's default
-// without rebuilding the table, which this adapter refuses to do, so a
-// default-only difference would make every later AutoMigrate fail. Defaults
-// still apply when a column is added; on existing columns they are left as is.
+// does, with two exceptions for differences SQLite cannot change without
+// rebuilding the table, which this adapter refuses to do:
+//
+//   - The default value. Defaults still apply when a column is added; on
+//     existing columns they are left as is.
+//   - Bool columns declared as "string". Earlier D1 drivers created bool columns
+//     with that type, and those tables are still in use.
 func (m Migrator) MigrateColumn(value any, field *schema.Field, columnType gorm.ColumnType) error {
-	return m.Migrator.MigrateColumn(value, field, modelDefault{baseColumn: columnType, field: field})
+	return m.Migrator.MigrateColumn(value, field, existingColumn{baseColumn: columnType, field: field})
 }
 
 // baseColumn is embedded under its own name because gorm.ColumnType has a
 // ColumnType method, which an embedded field of that name would shadow.
 type baseColumn = gorm.ColumnType
 
-// modelDefault reports the model's own default value, so the default check in
-// GORM's MigrateColumn always sees the column as unchanged.
-type modelDefault struct {
+// existingColumn adjusts what GORM's MigrateColumn sees for an existing column,
+// so the differences accepted above do not count as schema changes.
+type existingColumn struct {
 	baseColumn
 	field *schema.Field
 }
 
-func (c modelDefault) DefaultValue() (string, bool) {
+func (c existingColumn) DefaultValue() (string, bool) {
 	f := c.field
 	return f.DefaultValue, f.HasDefaultValue && (f.DefaultValueInterface != nil || !strings.EqualFold(f.DefaultValue, "NULL"))
+}
+
+func (c existingColumn) DatabaseTypeName() string {
+	name := c.baseColumn.DatabaseTypeName()
+	if c.field.DataType == schema.Bool && strings.EqualFold(strings.TrimSpace(name), legacyBoolType) {
+		return boolColumnType
+	}
+	return name
 }
 
 func (m Migrator) AlterColumn(any, string) error {

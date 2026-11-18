@@ -2,6 +2,7 @@ package gormd1
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -10,6 +11,101 @@ import (
 	d1 "github.com/intmian/gorm-d1-adapter"
 	"gorm.io/gorm"
 )
+
+// autoMigrateAgainst runs AutoMigrate for model against an existing table with
+// the given declared column types and returns its error and the SQL it sent.
+func autoMigrateAgainst(t *testing.T, model any, columns [][]any) (error, []string) {
+	t.Helper()
+	var sqls []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health" {
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+			return
+		}
+		var payload struct {
+			SQL string `json:"sql"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Error(err)
+		}
+		sqls = append(sqls, payload.SQL)
+		result := map[string]any{"meta": map[string]any{}, "columns": []string{}, "rows": []any{}}
+		switch {
+		case strings.Contains(payload.SQL, "SELECT count(*) FROM sqlite_master"):
+			result = map[string]any{"meta": map[string]any{}, "columns": []string{"count(*)"}, "rows": [][]any{{1}}}
+		case strings.HasPrefix(payload.SQL, "PRAGMA table_info"):
+			result = map[string]any{
+				"meta":    map[string]any{},
+				"columns": []string{"cid", "name", "type", "notnull", "dflt_value", "pk"},
+				"rows":    columns,
+			}
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "result": result})
+	}))
+	defer server.Close()
+
+	db, err := gorm.Open(OpenConfig(d1.Config{
+		Mode:           d1.ExecutorModeWorker,
+		WorkerEndpoint: server.URL,
+		WorkerToken:    "token",
+	}), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return db.Table("items").AutoMigrate(model), sqls
+}
+
+// Tables created by earlier D1 drivers declare bool columns as "string".
+func TestAutoMigrateAcceptsLegacyStringBool(t *testing.T) {
+	type item struct {
+		ID      int64 `gorm:"primaryKey"`
+		Deleted bool
+	}
+	err, sqls := autoMigrateAgainst(t, &item{}, [][]any{
+		{0, "id", "integer", 0, nil, 1},
+		{1, "deleted", "string", 0, nil, 0},
+	})
+	if err != nil {
+		t.Fatalf("legacy bool column: %v", err)
+	}
+	for _, query := range sqls {
+		if strings.HasPrefix(strings.ToUpper(query), "ALTER") {
+			t.Fatalf("unexpected schema change: %s", query)
+		}
+	}
+}
+
+// Only the bool/"string" pair is accepted; other type changes stay rejected.
+func TestAutoMigrateRejectsOtherTypeDifferences(t *testing.T) {
+	type boolItem struct {
+		ID    int64 `gorm:"primaryKey"`
+		Value bool
+	}
+	type intItem struct {
+		ID    int64 `gorm:"primaryKey"`
+		Value int
+	}
+	cases := []struct {
+		name     string
+		model    any
+		declared string
+	}{
+		{"bool declared as text", &boolItem{}, "text"},
+		{"int declared as string", &intItem{}, "string"},
+		{"int declared as text", &intItem{}, "text"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err, _ := autoMigrateAgainst(t, tc.model, [][]any{
+				{0, "id", "integer", 0, nil, 1},
+				{1, "value", tc.declared, 0, nil, 0},
+			})
+			if !errors.Is(err, d1.ErrDestructiveMigration) {
+				t.Fatalf("expected ErrDestructiveMigration, got %v", err)
+			}
+		})
+	}
+}
 
 func TestMigratorUsesD1CompatibleMetadataQueries(t *testing.T) {
 	var sqls []string
